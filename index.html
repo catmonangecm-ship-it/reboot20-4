@@ -998,7 +998,14 @@
                 console.log(`📍 Prix moyen: $${executionPrice.toFixed(6)}`);
                 
             } else {
-                // VENTE - Fermer la position
+                // VENTE - Vérifier qu'on a une position ouverte
+                if (!state.currentPosition) {
+                    console.error(`❌ ERREUR: Tentative de VENTE sans position ouverte`);
+                    alert('❌ Erreur: Impossible de vendre sans avoir acheté d\'abord !');
+                    return;
+                }
+                
+                // Fermer la position
                 profitPercent = ((executionPrice - state.lastBuyPrice) / state.lastBuyPrice) * 100;
                 netProfitUSDT = state.positionAmount * (profitPercent / 100);
                 
@@ -1198,6 +1205,7 @@
                 let decimals = 18;
                 try {
                     decimals = await tokenContract.decimals();
+                    console.log('📊 Decimals du token:', decimals);
                 } catch (e) {
                     console.log('⚠️ Decimals non trouvés, utilisation de 18 par défaut');
                 }
@@ -1206,35 +1214,15 @@
                 const tokenBalance = await tokenContract.balanceOf(tradingAddress);
                 
                 if (tokenBalance.isZero()) {
-                    throw new Error('Aucun token à vendre');
+                    throw new Error('❌ Aucun token à vendre. Vous devez d\'abord ACHETER avant de VENDRE.');
                 }
                 
-                console.log('💎 Balance:', ethers.utils.formatUnits(tokenBalance, decimals));
+                console.log('💎 Balance token:', ethers.utils.formatUnits(tokenBalance, decimals));
                 
-                // Calculer le montant à vendre basé sur le capital
-                const routerContract = new ethers.Contract(
-                    PANCAKE_ROUTER,
-                    [
-                        'function getAmountsIn(uint amountOut, address[] memory path) view returns (uint[] memory amounts)',
-                        'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)'
-                    ],
-                    signer
-                );
+                // VENDRE TOUT LE SOLDE DE TOKENS (pas juste une partie)
+                const finalTokenAmount = tokenBalance;
                 
-                const path = [tokenAddress, USDT_CONTRACT];
-                
-                // Calculer combien de tokens correspondent à amountUSDT
-                const amounts = await routerContract.getAmountsIn(amountInWei, path);
-                const tokenAmountToSell = amounts[0];
-                
-                // Vérifier qu'on a assez de tokens
-                if (tokenBalance.lt(tokenAmountToSell)) {
-                    console.log('⚠️ Balance insuffisante, vente de tout le solde');
-                }
-                
-                const finalTokenAmount = tokenBalance.lt(tokenAmountToSell) ? tokenBalance : tokenAmountToSell;
-                
-                console.log('💎 Montant à vendre:', ethers.utils.formatUnits(finalTokenAmount, decimals));
+                console.log('💎 Montant à vendre:', ethers.utils.formatUnits(finalTokenAmount, decimals), 'tokens');
                 
                 // Vérifier et approuver le token
                 const allowance = await tokenContract.allowance(tradingAddress, PANCAKE_ROUTER);
@@ -1256,13 +1244,31 @@
                     console.log('✅ Token déjà approuvé');
                 }
                 
+                // Créer le router contract pour le swap
+                const routerContract = new ethers.Contract(
+                    PANCAKE_ROUTER,
+                    [
+                        'function getAmountsOut(uint amountIn, address[] memory path) view returns (uint[] memory amounts)',
+                        'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)'
+                    ],
+                    signer
+                );
+                
+                const path = [tokenAddress, USDT_CONTRACT];
+                
                 // Calculer le montant minimum USDT attendu
+                console.log('📊 Calcul du prix de vente...');
                 const amountsOut = await routerContract.getAmountsOut(finalTokenAmount, path);
                 const usdtExpected = amountsOut[1];
                 const usdtMin = usdtExpected.mul(Math.floor((1 - slippage) * 10000)).div(10000);
                 
                 console.log('💵 USDT attendu:', ethers.utils.formatUnits(usdtExpected, 18));
                 console.log('💵 USDT minimum:', ethers.utils.formatUnits(usdtMin, 18));
+                
+                // Vérifier que le montant minimum est raisonnable
+                if (usdtMin.isZero()) {
+                    throw new Error('❌ Le montant de vente est trop faible (< 0.01 USDT). Augmentez le capital de trading.');
+                }
                 
                 // Effectuer le swap
                 console.log('🔄 Swap Token → USDT...');
@@ -1273,7 +1279,7 @@
                     tradingAddress,
                     deadline,
                     { 
-                        gasLimit: 300000,
+                        gasLimit: 350000,  // Augmenté pour plus de sécurité
                         gasPrice: gasPriceWithBuffer
                     }
                 );
@@ -1283,6 +1289,7 @@
                 
                 const receipt = await swapTx.wait(1);
                 console.log('✅ Swap confirmé - Block:', receipt.blockNumber);
+                console.log('💰 Tokens vendus avec succès');
                 
                 return swapTx.hash;
             }
