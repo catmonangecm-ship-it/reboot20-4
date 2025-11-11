@@ -404,25 +404,67 @@
                     throw new Error('Format de données invalide');
                 }
                 
-                state.cryptoList = data
-                    .filter(item => item.symbol.endsWith('USDT') && parseFloat(item.volume) > 0)
+                // Créer un map des données Binance pour accès rapide
+                const binanceData = {};
+                data.forEach(item => {
+                    if (item.symbol.endsWith('USDT')) {
+                        binanceData[item.symbol] = {
+                            price: parseFloat(item.lastPrice),
+                            priceChange: parseFloat(item.priceChangePercent),
+                            volume: parseFloat(item.volume)
+                        };
+                    }
+                });
+                
+                // TOUJOURS charger TOUTES les cryptos de TOKEN_ADDRESSES en priorité
+                state.cryptoList = [];
+                
+                // D'abord, ajouter toutes les cryptos avec adresses de contrat (trading réel)
+                Object.keys(TOKEN_ADDRESSES).forEach(symbol => {
+                    const binanceInfo = binanceData[symbol];
+                    state.cryptoList.push({
+                        symbol: symbol,
+                        name: symbol.replace('USDT', ''),
+                        price: binanceInfo ? binanceInfo.price : 0,
+                        priceChange: binanceInfo ? binanceInfo.priceChange : 0,
+                        volume: binanceInfo ? binanceInfo.volume : 0,
+                        realTradingAvailable: true
+                    });
+                });
+                
+                // Ensuite, ajouter d'autres cryptos populaires (simulation uniquement)
+                const additionalCryptos = data
+                    .filter(item => {
+                        return item.symbol.endsWith('USDT') && 
+                               !TOKEN_ADDRESSES[item.symbol] && 
+                               parseFloat(item.volume) > 10000000; // Volume élevé
+                    })
+                    .sort((a, b) => parseFloat(b.volume) - parseFloat(a.volume))
+                    .slice(0, 20) // Top 20 supplémentaires
                     .map(item => ({
                         symbol: item.symbol,
                         name: item.symbol.replace('USDT', ''),
                         price: parseFloat(item.lastPrice),
                         priceChange: parseFloat(item.priceChangePercent),
                         volume: parseFloat(item.volume),
-                        realTradingAvailable: !!TOKEN_ADDRESSES[item.symbol]
-                    }))
-                    .sort((a, b) => b.volume - a.volume)
-                    .slice(0, 50);
+                        realTradingAvailable: false
+                    }));
+                
+                state.cryptoList = [...state.cryptoList, ...additionalCryptos];
+                
+                // Trier par volume (les cryptos avec trading réel en premier)
+                state.cryptoList.sort((a, b) => {
+                    if (a.realTradingAvailable && !b.realTradingAvailable) return -1;
+                    if (!a.realTradingAvailable && b.realTradingAvailable) return 1;
+                    return b.volume - a.volume;
+                });
                 
                 if (state.cryptoList.length === 0) {
                     throw new Error('Aucune crypto trouvée');
                 }
                 
                 document.getElementById('cryptoSelect').innerHTML = state.cryptoList.map(c => 
-                    `<option value="${c.symbol}">${c.name} - $${c.price.toFixed(2)} ${c.realTradingAvailable ? '💎' : '🎮'}</option>`
+                    `<option value="${c.symbol}">${c.name} - $${c.price > 0 ? c.price.toFixed(c.price < 1 ? 6 : 2) : '...'} ${c.realTradingAvailable ? '💎' : '🎮'}</option>`
                 ).join('');
                 
                 if (state.cryptoList.length > 0) {
@@ -434,6 +476,8 @@
                 document.getElementById('apiStatus').innerHTML = '🟢 En ligne';
                 document.getElementById('refreshText').textContent = 'Actualiser';
                 updateUI();
+                
+                console.log(`✅ ${state.cryptoList.length} cryptos chargées (${Object.keys(TOKEN_ADDRESSES).length} avec trading réel)`);
                 
             } catch (error) {
                 console.error('❌ Erreur fetch:', error);
