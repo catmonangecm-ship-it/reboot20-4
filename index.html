@@ -203,6 +203,7 @@
                             <p class="font-semibold text-blue-400">Statut</p>
                             <p>Wallet: <span id="walletStatus">🔴 Non connecté</span></p>
                             <p>Mode: <span id="tradingTypeStatus">🟡 ...</span></p>
+                            <p>Position: <span id="positionStatus">⚪ Aucune</span></p>
                             <p>Binance: <span id="apiStatus">🟡 ...</span></p>
                             <p>Ethers: <span id="ethersStatus">🟡 ...</span></p>
                         </div>
@@ -250,7 +251,10 @@
             provider: null,
             privateKey: null,
             wallet: null,
-            autoMode: false
+            autoMode: false,
+            currentPosition: null, // null = pas de position, 'BUY' = position longue ouverte
+            lastBuyPrice: 0,
+            positionAmount: 0
         };
 
         let ws = null, botInterval = null, lastTradeTime = 0;
@@ -290,9 +294,39 @@
         };
 
         const strategies = {
-            scalping: { name: 'Scalping', description: 'Rapide RSI+MACD', minTradeInterval: 30000 },
-            swing: { name: 'Swing', description: 'Positions EMA', minTradeInterval: 300000 },
-            arbitrage: { name: 'Arbitrage', description: 'Diff prix', minTradeInterval: 60000 }
+            scalping: { 
+                name: 'Scalping', 
+                description: 'Rapide RSI+MACD', 
+                minTradeInterval: 180000,    // 3 minutes (était 30s)
+                rsiBuyThreshold: 40,
+                rsiBuyStrong: 30,
+                rsiSellThreshold: 60,
+                rsiSellStrong: 70,
+                takeProfit: 1.5,
+                stopLoss: -1.0
+            },
+            swing: { 
+                name: 'Swing', 
+                description: 'Positions EMA', 
+                minTradeInterval: 900000,    // 15 minutes (était 5min)
+                rsiBuyThreshold: 35,
+                rsiBuyStrong: 25,
+                rsiSellThreshold: 70,
+                rsiSellStrong: 75,
+                takeProfit: 3.0,
+                stopLoss: -2.0
+            },
+            arbitrage: { 
+                name: 'Arbitrage', 
+                description: 'Diff prix', 
+                minTradeInterval: 60000,     // 1 minute (inchangé)
+                rsiBuyThreshold: 45,
+                rsiBuyStrong: 35,
+                rsiSellThreshold: 55,
+                rsiSellStrong: 65,
+                takeProfit: 0.8,
+                stopLoss: -0.5
+            }
         };
 
         window.addEventListener('DOMContentLoaded', () => {
@@ -311,17 +345,49 @@
         });
 
         function renderStrategies() {
-            document.getElementById('strategiesGrid').innerHTML = Object.entries(strategies).map(([key, s]) => `
+            document.getElementById('strategiesGrid').innerHTML = Object.entries(strategies).map(([key, s]) => {
+                const intervalMinutes = s.minTradeInterval / 60000;
+                const intervalDisplay = intervalMinutes >= 1 
+                    ? `${intervalMinutes} min` 
+                    : `${s.minTradeInterval / 1000}s`;
+                
+                return `
                 <div onclick="selectStrategy('${key}')" class="p-4 rounded-lg border-2 ${state.selectedStrategy === key ? 'border-yellow-400 bg-yellow-400/10' : 'border-slate-600'} cursor-pointer hover:border-yellow-400/50 transition-all">
                     <h3 class="font-bold mb-2">${s.name}</h3>
-                    <p class="text-gray-400 text-sm">${s.description}</p>
+                    <p class="text-gray-400 text-sm mb-2">${s.description}</p>
+                    <div class="text-xs text-gray-500 space-y-0.5">
+                        <p>📊 Achat: RSI &lt; ${s.rsiBuyThreshold}</p>
+                        <p>📈 Vente: RSI &gt; ${s.rsiSellThreshold}</p>
+                        <p>🎯 TP: +${s.takeProfit}% | SL: ${s.stopLoss}%</p>
+                        <p>⏱️ Cooldown: ${intervalDisplay}</p>
+                    </div>
                 </div>
-            `).join('');
+            `}).join('');
         }
 
         function selectStrategy(key) {
+            const oldStrategy = state.selectedStrategy;
             state.selectedStrategy = key;
             renderStrategies();
+            
+            const newStrategy = strategies[key];
+            const intervalDisplay = newStrategy.minTradeInterval >= 60000 
+                ? `${newStrategy.minTradeInterval / 60000} min` 
+                : `${newStrategy.minTradeInterval / 1000}s`;
+            
+            console.log(`\n${'📋'.repeat(35)}`);
+            console.log(`📋 CHANGEMENT DE STRATÉGIE`);
+            console.log(`${'📋'.repeat(35)}`);
+            console.log(`⏰ ${new Date().toLocaleString('fr-FR')}`);
+            console.log(`❌ Ancienne: ${strategies[oldStrategy].name}`);
+            console.log(`✅ Nouvelle: ${newStrategy.name}`);
+            console.log(`\n📊 PARAMÈTRES:`);
+            console.log(`   • Achat: RSI < ${newStrategy.rsiBuyThreshold} (fort: < ${newStrategy.rsiBuyStrong})`);
+            console.log(`   • Vente: RSI > ${newStrategy.rsiSellThreshold} (fort: > ${newStrategy.rsiSellStrong})`);
+            console.log(`   • Take Profit: +${newStrategy.takeProfit}%`);
+            console.log(`   • Stop Loss: ${newStrategy.stopLoss}%`);
+            console.log(`   • Cooldown: ${intervalDisplay} entre chaque trade`);
+            console.log(`${'='.repeat(70)}\n`);
         }
 
         function openDCASwap() {
@@ -734,15 +800,57 @@
         function startBot() {
             const strategy = strategies[state.selectedStrategy];
             
+            const intervalDisplay = strategy.minTradeInterval >= 60000 
+                ? `${strategy.minTradeInterval / 60000} min` 
+                : `${strategy.minTradeInterval / 1000}s`;
+            
+            console.log(`\n${'🚀'.repeat(35)}`);
+            console.log(`🤖 BOT DE TRADING DÉMARRÉ`);
+            console.log(`${'🚀'.repeat(35)}`);
+            console.log(`⏰ ${new Date().toLocaleString('fr-FR')}`);
+            console.log(`💰 Capital: ${state.tradingCapital.toFixed(2)} USDT`);
+            console.log(`📊 Stratégie: ${strategy.name}`);
+            console.log(`💎 Mode: ${state.tradingMode === 'real' ? 'RÉEL' : 'SIMULATION'}`);
+            console.log(`🤖 Type: ${state.autoMode ? 'Automatique' : 'Manuel'}`);
+            console.log(`⏱️ Cooldown: ${intervalDisplay} entre chaque trade`);
+            console.log(`${'='.repeat(70)}\n`);
+            
+            let logCounter = 0;
+            
             botInterval = setInterval(() => {
-                if (state.priceHistory.length < 50) return;
+                if (state.priceHistory.length < 50) {
+                    console.log(`⏳ Collecte des données... ${state.priceHistory.length}/50 prix`);
+                    return;
+                }
                 
                 const now = Date.now();
-                if (now - lastTradeTime < strategy.minTradeInterval) return;
+                const timeRemaining = strategy.minTradeInterval - (now - lastTradeTime);
+                
+                if (timeRemaining > 0) {
+                    // Afficher le temps restant en minutes ou secondes
+                    const timeDisplay = timeRemaining >= 60000 
+                        ? `${Math.ceil(timeRemaining / 60000)} min` 
+                        : `${Math.ceil(timeRemaining / 1000)}s`;
+                    
+                    // Log toutes les 10 itérations (environ toutes les 50 secondes)
+                    if (logCounter % 10 === 0) {
+                        console.log(`⏰ Cooldown: ${timeDisplay} restantes | Prix: $${state.currentPrice.toFixed(6)} | RSI: ${state.indicators.rsi.toFixed(1)} | Position: ${state.currentPosition ? '🟢 LONG' : '⚪ AUCUNE'}`);
+                    }
+                    logCounter++;
+                    return;
+                }
                 
                 const signal = getTradeSignal();
                 if (signal.signal && signal.confidence > 0.65) {
+                    console.log(`\n🎯 SIGNAL DÉTECTÉ: ${signal.signal} (Confiance: ${(signal.confidence * 100).toFixed(1)}%)`);
                     executeTrade(signal.signal, signal.confidence);
+                    logCounter = 0;
+                } else {
+                    // Log toutes les 10 itérations même sans signal
+                    if (logCounter % 10 === 0 && !signal.signal) {
+                        console.log(`⏳ Recherche de signal... Prix: $${state.currentPrice.toFixed(6)} | RSI: ${state.indicators.rsi.toFixed(1)} | Position: ${state.currentPosition ? '🟢 LONG' : '⚪ AUCUNE'}`);
+                    }
+                    logCounter++;
                 }
             }, 5000);
         }
@@ -751,37 +859,113 @@
             if (botInterval) {
                 clearInterval(botInterval);
                 botInterval = null;
+                
+                console.log(`\n${'🛑'.repeat(35)}`);
+                console.log(`🛑 BOT DE TRADING ARRÊTÉ`);
+                console.log(`${'🛑'.repeat(35)}`);
+                console.log(`⏰ ${new Date().toLocaleString('fr-FR')}`);
+                console.log(`📊 Trades effectués: ${state.trades.length}`);
+                console.log(`💰 Profit total: ${state.portfolio.profit >= 0 ? '+' : ''}${state.portfolio.profit.toFixed(2)} USDT`);
+                console.log(`📈 Performance: ${state.portfolio.profitPercent}%`);
+                console.log(`📍 Position finale: ${state.currentPosition ? '🟢 LONG OUVERTE (non fermée)' : '⚪ AUCUNE'}`);
+                if (state.currentPosition) {
+                    const profitPercent = ((state.currentPrice - state.lastBuyPrice) / state.lastBuyPrice) * 100;
+                    console.log(`⚠️ Position ouverte non réalisée: ${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(2)}%`);
+                }
+                console.log(`${'='.repeat(70)}\n`);
             }
         }
 
         function getTradeSignal() {
             const { rsi, macd } = state.indicators;
+            const strategy = strategies[state.selectedStrategy];
             
-            if (rsi < 30 && macd.histogram > 0) return { signal: 'BUY', confidence: 0.8 };
-            if (rsi > 70 && macd.histogram < 0) return { signal: 'SELL', confidence: 0.8 };
-            
-            return { signal: null, confidence: 0 };
+            // Si on n'a pas de position ouverte, chercher un signal d'ACHAT
+            if (!state.currentPosition) {
+                // Conditions d'achat adaptées à la stratégie
+                if (rsi < strategy.rsiBuyThreshold && macd.histogram > 0) {
+                    console.log(`🔍 SIGNAL ACHAT [${strategy.name}]: RSI=${rsi.toFixed(1)} < ${strategy.rsiBuyThreshold}, MACD=${macd.histogram.toFixed(4)}`);
+                    return { signal: 'BUY', confidence: 0.85 };
+                }
+                if (rsi < strategy.rsiBuyStrong) {
+                    console.log(`🔍 SIGNAL ACHAT FORT [${strategy.name}]: RSI très bas=${rsi.toFixed(1)} < ${strategy.rsiBuyStrong}`);
+                    return { signal: 'BUY', confidence: 0.9 };
+                }
+                
+                // Log toutes les 5 vérifications pour ne pas spammer
+                if (Math.random() < 0.2) {
+                    console.log(`⏳ Attente signal achat [${strategy.name}]: RSI=${rsi.toFixed(1)} (seuil: ${strategy.rsiBuyThreshold}), MACD=${macd.histogram.toFixed(4)}`);
+                }
+                return { signal: null, confidence: 0 };
+            } 
+            // Si on a une position ouverte, chercher un signal de VENTE
+            else {
+                const profitPercent = ((state.currentPrice - state.lastBuyPrice) / state.lastBuyPrice) * 100;
+                
+                // Conditions de VENTE adaptées à la stratégie
+                
+                // 1. Take profit selon la stratégie
+                if (profitPercent >= strategy.takeProfit) {
+                    console.log(`🎯 SIGNAL VENTE [${strategy.name}] (Take Profit): Profit=${profitPercent.toFixed(2)}% ≥ ${strategy.takeProfit}%`);
+                    return { signal: 'SELL', confidence: 0.95 };
+                }
+                
+                // 2. Stop loss selon la stratégie
+                if (profitPercent <= strategy.stopLoss) {
+                    console.log(`🛑 SIGNAL VENTE [${strategy.name}] (Stop Loss): Perte=${profitPercent.toFixed(2)}% ≤ ${strategy.stopLoss}%`);
+                    return { signal: 'SELL', confidence: 0.9 };
+                }
+                
+                // 3. RSI suracheté selon la stratégie
+                if (rsi > strategy.rsiSellThreshold && macd.histogram < 0) {
+                    console.log(`📉 SIGNAL VENTE [${strategy.name}] (RSI): RSI=${rsi.toFixed(1)} > ${strategy.rsiSellThreshold}, Profit actuel=${profitPercent.toFixed(2)}%`);
+                    return { signal: 'SELL', confidence: 0.8 };
+                }
+                
+                // 4. RSI très suracheté
+                if (rsi > strategy.rsiSellStrong) {
+                    console.log(`📉 SIGNAL VENTE FORT [${strategy.name}]: RSI très élevé=${rsi.toFixed(1)} > ${strategy.rsiSellStrong}, Profit=${profitPercent.toFixed(2)}%`);
+                    return { signal: 'SELL', confidence: 0.85 };
+                }
+                
+                // Log périodique de la position
+                if (Math.random() < 0.2) {
+                    console.log(`💎 Position maintenue [${strategy.name}]: Prix achat=$${state.lastBuyPrice.toFixed(6)}, Prix actuel=$${state.currentPrice.toFixed(6)}, P&L=${profitPercent.toFixed(2)}%, RSI=${rsi.toFixed(1)} (vente: ${strategy.rsiSellThreshold}+)`);
+                }
+                return { signal: null, confidence: 0 };
+            }
         }
 
         async function executeTrade(tradeType, confidence) {
             const percent = parseFloat(document.getElementById('tradePercent').value);
             const tradeAmountUSDT = (state.tradingCapital * percent) / 100;
             
-            console.log(`\n${'='.repeat(60)}`);
-            console.log(`📊 ${tradeType === 'BUY' ? '📈 ACHAT' : '📉 VENTE'}`);
-            console.log(`${'='.repeat(60)}`);
+            console.log(`\n${'='.repeat(70)}`);
+            console.log(`📊 ${tradeType === 'BUY' ? '🟢 ORDRE D\'ACHAT' : '🔴 ORDRE DE VENTE'}`);
+            console.log(`${'='.repeat(70)}`);
+            console.log(`⏰ Date: ${new Date().toLocaleString('fr-FR')}`);
             console.log(`💰 Montant: ${tradeAmountUSDT.toFixed(2)} USDT`);
             console.log(`📍 Paire: ${state.selectedCrypto}`);
+            console.log(`💵 Prix actuel: $${state.currentPrice.toFixed(6)}`);
             console.log(`💎 Mode: ${state.tradingMode === 'real' ? 'RÉEL (BSC)' : 'SIMULATION'}`);
             console.log(`🤖 Type: ${state.autoMode ? 'Automatique' : 'Manuel MetaMask'}`);
             console.log(`🎯 Stratégie: ${strategies[state.selectedStrategy].name}`);
+            console.log(`📊 Confiance: ${(confidence * 100).toFixed(1)}%`);
+            console.log(`📈 RSI: ${state.indicators.rsi.toFixed(1)}`);
+            console.log(`📉 MACD: ${state.indicators.macd.histogram.toFixed(4)}`);
+            
+            if (tradeType === 'SELL' && state.currentPosition) {
+                const profitPercent = ((state.currentPrice - state.lastBuyPrice) / state.lastBuyPrice) * 100;
+                console.log(`💎 Prix d'achat: $${state.lastBuyPrice.toFixed(6)}`);
+                console.log(`📊 P&L avant frais: ${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(2)}%`);
+            }
             
             let txHash = null;
             let executionPrice = state.currentPrice;
             
             if (state.tradingMode === 'real' && (state.isConnected || state.wallet)) {
                 try {
-                    console.log(`\n🔄 Transaction BSC en cours...`);
+                    console.log(`\n🔄 Envoi transaction BSC...`);
                     txHash = await executeRealTrade(tradeType, tradeAmountUSDT);
                     console.log(`✅ TX envoyée: ${txHash}`);
                     console.log(`🔗 BSCScan: https://bscscan.com/tx/${txHash}`);
@@ -789,30 +973,51 @@
                     const slippage = parseFloat(document.getElementById('slippage').value) / 100;
                     executionPrice = state.currentPrice * (1 + (Math.random() * slippage * 2 - slippage));
                 } catch (error) {
-                    console.error(`❌ Erreur trade:`, error);
+                    console.error(`❌ Erreur transaction:`, error);
                     alert('❌ Erreur transaction: ' + error.message);
                     return;
                 }
-            }
-            
-            if (!txHash) {
+            } else {
                 executionPrice = state.currentPrice * (1 + (Math.random() * 0.01 - 0.005));
-                console.log(`\n🎮 Mode simulation`);
+                console.log(`\n🎮 Mode simulation - Exécution virtuelle`);
             }
             
-            const profitPercent = tradeType === 'BUY' 
-                ? (state.currentPrice - executionPrice) / executionPrice * 100
-                : (executionPrice - state.currentPrice) / executionPrice * 100;
+            console.log(`\n✅ ORDRE EXÉCUTÉ`);
+            console.log(`💵 Prix d'exécution: $${executionPrice.toFixed(6)}`);
             
-            const netProfitUSDT = tradeAmountUSDT * (profitPercent / 100);
+            let profitPercent = 0;
+            let netProfitUSDT = 0;
             
-            console.log(`\n💵 Prix exec: ${executionPrice.toFixed(6)}`);
-            console.log(`💵 Prix actuel: ${state.currentPrice.toFixed(6)}`);
-            console.log(`${netProfitUSDT >= 0 ? '📈' : '📉'} Profit: ${netProfitUSDT >= 0 ? '+' : ''}${netProfitUSDT.toFixed(4)} (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
+            if (tradeType === 'BUY') {
+                // ACHAT - Ouvrir une position
+                state.currentPosition = 'BUY';
+                state.lastBuyPrice = executionPrice;
+                state.positionAmount = tradeAmountUSDT;
+                console.log(`\n📈 POSITION OUVERTE`);
+                console.log(`💰 Quantité: ${tradeAmountUSDT.toFixed(2)} USDT`);
+                console.log(`📍 Prix moyen: $${executionPrice.toFixed(6)}`);
+                
+            } else {
+                // VENTE - Fermer la position
+                profitPercent = ((executionPrice - state.lastBuyPrice) / state.lastBuyPrice) * 100;
+                netProfitUSDT = state.positionAmount * (profitPercent / 100);
+                
+                console.log(`\n📉 POSITION FERMÉE`);
+                console.log(`💰 Quantité vendue: ${state.positionAmount.toFixed(2)} USDT`);
+                console.log(`📊 Prix achat: $${state.lastBuyPrice.toFixed(6)}`);
+                console.log(`📊 Prix vente: $${executionPrice.toFixed(6)}`);
+                console.log(`${netProfitUSDT >= 0 ? '📈 PROFIT' : '📉 PERTE'}: ${netProfitUSDT >= 0 ? '+' : ''}${netProfitUSDT.toFixed(4)} USDT (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`);
+                
+                // Réinitialiser la position
+                state.currentPosition = null;
+                state.lastBuyPrice = 0;
+                state.positionAmount = 0;
+            }
             
             const newTrade = {
                 id: Date.now(),
-                time: new Date().toLocaleTimeString(),
+                time: new Date().toLocaleTimeString('fr-FR'),
+                date: new Date().toLocaleDateString('fr-FR'),
                 pair: state.selectedCrypto,
                 type: tradeType,
                 amount: tradeAmountUSDT.toFixed(2),
@@ -822,25 +1027,30 @@
                 mode: txHash ? 'real' : state.tradingMode,
                 txHash: txHash,
                 strategy: strategies[state.selectedStrategy].name,
-                autoMode: state.autoMode
+                autoMode: state.autoMode,
+                rsi: state.indicators.rsi.toFixed(1),
+                macd: state.indicators.macd.histogram.toFixed(4)
             };
             
             state.trades.unshift(newTrade);
             state.trades = state.trades.slice(0, 50);
             
-            state.portfolio.profit += netProfitUSDT;
-            state.portfolio.profitPercent = ((state.portfolio.profit / state.tradingCapital) * 100).toFixed(2);
+            if (tradeType === 'SELL') {
+                state.portfolio.profit += netProfitUSDT;
+                state.portfolio.profitPercent = ((state.portfolio.profit / state.tradingCapital) * 100).toFixed(2);
+            }
             
             lastTradeTime = Date.now();
             
             renderTrades();
             updateUI();
             
-            console.log(`\n📊 Portfolio:`);
-            console.log(`💰 Capital: ${state.tradingCapital.toFixed(2)}`);
-            console.log(`📈 Profit: ${state.portfolio.profit >= 0 ? '+' : ''}${state.portfolio.profit.toFixed(2)}`);
+            console.log(`\n💼 PORTFOLIO TOTAL:`);
+            console.log(`💰 Capital: ${state.tradingCapital.toFixed(2)} USDT`);
+            console.log(`📈 Profit cumulé: ${state.portfolio.profit >= 0 ? '+' : ''}${state.portfolio.profit.toFixed(2)} USDT`);
             console.log(`📊 Performance: ${state.portfolio.profitPercent}%`);
-            console.log(`${'='.repeat(60)}\n`);
+            console.log(`📍 Position actuelle: ${state.currentPosition ? '🟢 LONGUE OUVERTE' : '⚪ AUCUNE'}`);
+            console.log(`${'='.repeat(70)}\n`);
         }
 
         async function executeRealTrade(tradeType, amountUSDT) {
@@ -1100,29 +1310,33 @@
             if (state.trades.length === 0) return;
             
             document.getElementById('tradesContainer').innerHTML = state.trades.map(t => `
-                <div class="flex items-center justify-between p-4 bg-slate-700/50 rounded-lg mb-2">
+                <div class="flex items-center justify-between p-4 bg-slate-700/50 rounded-lg mb-2 border-l-4 ${t.type === 'BUY' ? 'border-green-400' : 'border-red-400'}">
                     <div class="flex items-center gap-4">
-                        <span class="${t.type === 'BUY' ? 'text-green-400' : 'text-red-400'} text-2xl">
-                            ${t.type === 'BUY' ? '📈' : '📉'}
+                        <span class="${t.type === 'BUY' ? 'text-green-400' : 'text-red-400'} text-3xl">
+                            ${t.type === 'BUY' ? '🟢' : '🔴'}
                         </span>
                         <div>
                             <div class="flex items-center gap-2">
+                                <p class="font-bold text-lg">${t.type === 'BUY' ? 'ACHAT' : 'VENTE'}</p>
                                 <p class="font-semibold">${t.pair.replace('USDT', '')}/USDT</p>
                                 ${t.mode === 'real' ? '<span class="text-xs bg-orange-400/20 text-orange-400 px-2 py-0.5 rounded font-bold">RÉEL BSC</span>' : '<span class="text-xs bg-blue-400/20 text-blue-400 px-2 py-0.5 rounded">SIM</span>'}
                                 ${t.autoMode ? '<span class="text-xs bg-purple-400/20 text-purple-400 px-2 py-0.5 rounded">AUTO</span>' : ''}
                             </div>
-                            <p class="text-xs text-gray-400">${t.time} • ${t.strategy} • ${t.amount}</p>
-                            ${t.txHash ? `<a href="https://bscscan.com/tx/${t.txHash}" target="_blank" class="text-xs text-purple-400 hover:underline">Voir TX sur BSCScan ↗</a>` : ''}
+                            <p class="text-xs text-gray-400 mt-1">${t.date ? t.date + ' - ' : ''}${t.time} • ${t.strategy} • ${t.amount} USDT</p>
+                            <p class="text-xs text-gray-500">RSI: ${t.rsi || 'N/A'} • MACD: ${t.macd || 'N/A'}</p>
+                            ${t.txHash ? `<a href="https://bscscan.com/tx/${t.txHash}" target="_blank" class="text-xs text-purple-400 hover:underline mt-1 inline-block">📋 Voir TX sur BSCScan ↗</a>` : ''}
                         </div>
                     </div>
                     <div class="text-right">
-                        <p class="text-sm">${t.entryPrice}</p>
-                        <p class="text-sm font-semibold ${parseFloat(t.profit) >= 0 ? 'text-green-400' : 'text-red-400'}">
-                            ${parseFloat(t.profit) >= 0 ? '+' : ''}${t.profit}
-                        </p>
-                        <p class="text-xs ${parseFloat(t.profitPercent) >= 0 ? 'text-green-400' : 'text-red-400'}">
-                            ${parseFloat(t.profitPercent) >= 0 ? '+' : ''}${t.profitPercent}%
-                        </p>
+                        <p class="text-sm font-mono">${t.entryPrice}</p>
+                        ${t.type === 'SELL' ? `
+                            <p class="text-lg font-bold ${parseFloat(t.profit) >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                ${parseFloat(t.profit) >= 0 ? '+' : ''}${t.profit} USDT
+                            </p>
+                            <p class="text-sm font-semibold ${parseFloat(t.profitPercent) >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                ${parseFloat(t.profitPercent) >= 0 ? '+' : ''}${t.profitPercent}%
+                            </p>
+                        ` : '<p class="text-sm text-gray-400">Position ouverte</p>'}
                     </div>
                 </div>
             `).join('');
@@ -1181,6 +1395,17 @@
                 document.getElementById('tradingTypeStatus').innerHTML = '📱 Manuel MetaMask';
             } else {
                 document.getElementById('tradingTypeStatus').innerHTML = '🟡 Non configuré';
+            }
+            
+            // Afficher le statut de la position
+            if (state.currentPosition) {
+                const profitPercent = ((state.currentPrice - state.lastBuyPrice) / state.lastBuyPrice) * 100;
+                const profitUSDT = state.positionAmount * (profitPercent / 100);
+                document.getElementById('positionStatus').innerHTML = `🟢 Long ${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(2)}%`;
+                document.getElementById('positionStatus').className = profitPercent >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold';
+            } else {
+                document.getElementById('positionStatus').innerHTML = '⚪ Aucune';
+                document.getElementById('positionStatus').className = 'text-gray-400';
             }
             
             document.getElementById('profitDisplay').textContent = state.portfolio.profit.toFixed(2);
